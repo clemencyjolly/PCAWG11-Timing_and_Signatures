@@ -56,13 +56,13 @@ With all of the required input files available, the two R scripts can be run as 
 For the mutational timing of gains:
 
 ```
-Rscript --no-restore PCAWG_timing.R samplename
+Rscript --no-restore PCAWG_timing.R samplename path_to_clustering path_to_cn
 ```
 
 And similarly, for the timing of signatures:
 
 ```
-Rscript --no-restore PCAWG_signatures.R samplename
+Rscript --no-restore PCAWG_signatures.R samplename path_to_clustering path_to_vcf path_to_indel_vcf 
 ```
 
 ## Output
