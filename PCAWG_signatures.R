@@ -611,6 +611,11 @@ args = commandArgs(TRUE)
 id = args[1]
 print(id)
 
+timing_filepath = args[2]
+vcf_filepath = args[3]
+indel_vcf_filepath = args[4]
+consensus_clustering = args[5]
+
 # Read in signatures
 snv_comp = read.csv("sigProfiler_SBS_signatures.csv")
 mnv_comp = read.csv("sigProfiler_DBS_signatures.csv")
@@ -654,7 +659,7 @@ n_weights = subset(n_weights[,-which(names(n_weights) %in% c("SBS7a", "SBS7b", "
 n_weights = n_weights[,c(1,65,2:4,69,66,5:6,67,7:9,68,10:64)]
 
 # Add a column of the number of mutations per time frame
-timed_muts = read.delim(gzfile(paste0(consensus_clustering, id, "_mutation_timing.txt.gz")), 
+timed_muts = read.delim(gzfile(paste0(timing_filepath, id, "_mutation_timing.txt.gz")), 
                         header=TRUE, stringsAsFactors = FALSE)
 timed_muts = subset(timed_muts, mut_type != "SV")
 timed_muts = table(timed_muts$timing)
