@@ -1,7 +1,5 @@
 # Mutational timing of gains for single samples
 
-setwd("/home/cjolly/results/ICGC_timing") 
-
 # libraries
 library(VariantAnnotation)
 library(cancerTiming)
@@ -11,6 +9,12 @@ args = commandArgs(TRUE)
 vcf_filename = args[1]
 id = gsub(".consensus.20160830.somatic.snv_mnv.vcf.gz","",basename(vcf_filename))
 print(id)
+
+# clustering file path given as input from command line
+dpoutput_path = args[2]
+
+# cn file pth
+cn_path = args[3]
 
 # Assign mutations as clonal or subclonal, requires file with clustered mutations
 assignMuts <- function(subclones_file){
@@ -82,7 +86,7 @@ dpoutput_files = list.files(dpoutput_path, pattern = "cluster_assignments.txt.gz
 subclonal_structure_files = list.files(dpoutput_path, pattern = "subclonal_structure.txt.gz", recursive=FALSE, full.names = TRUE)
 
 # tumour purity and ploidy
-purity_ploidy = read.table("../consensus.20170217.purity.ploidy.txt.gz", header = TRUE)
+purity_ploidy = read.table("consensus.20170217.purity.ploidy.txt.gz", header = TRUE)
 sample_purity = subset(purity_ploidy, samplename == id)$purity
 norm_cont = 1 - sample_purity
 
