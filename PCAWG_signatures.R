@@ -614,7 +614,6 @@ print(id)
 timing_filepath = args[2]
 vcf_filepath = args[3]
 indel_vcf_filepath = args[4]
-consensus_clustering = args[5]
 
 # Read in signatures
 snv_comp = read.csv("sigProfiler_SBS_signatures.csv")
