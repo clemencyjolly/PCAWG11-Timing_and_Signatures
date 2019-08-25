@@ -1,0 +1,379 @@
+---
+  title: "PCAWG-11 Timing of gains and mutational signatures"
+author: "Clemency Jolly"
+output: 
+  html_document:
+  toc: true
+toc_depth: 2
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+```
+
+# Libraries
+
+```{r}
+library(ggplot2)
+```
+
+# Mutational timing of gains, Figure 1c
+
+Format timing of segments 
+```{r}
+timedGains = read.delim("20190824_timing_gains.txt", stringsAsFactors = FALSE, header = TRUE)
+summaryTable = read.delim("summary_table_combined_annotations_v2_newHist.txt", stringsAsFactors = FALSE, header = TRUE)
+
+# Remove Y chrom and cell line 
+timedGains = timedGains[timedGains$chr!="Y" & timedGains$samplename != "8454fe53-869d-41c8-b0c8-a7929d00eec3",]
+
+# Add segment identifier
+timedGains$segId = paste0(timedGains$samplename, "_", timedGains$chr, "_", timedGains$start, "_", timedGains$end, "_", timedGains$length, "_", timedGains$type)
+
+# Add an "all" chromosome set of rows
+timedGains.all = timedGains
+timedGains.all$chr = "all"
+timedGains = rbind(timedGains, timedGains.all)
+
+# Add n for each cancer type, all results
+n.samples.hist = table(unique(timedGains[,which(colnames(timedGains) %in% c("samplename", "histology_abbreviation"))])$histology_abbreviation)
+timedGains$n_samples_hist = n.samples.hist[match(timedGains$histology_abbreviation, names(n.samples.hist))]
+timedGains$n_histology_abbreviation = paste0(timedGains$histology_abbreviation, " (n = ", timedGains$n_samples_hist, ")")
+
+# Get proportion of events, per chromosome per cancer type
+for (c in c(1:22, "X", "all", "WGD")){
+  for (h in sort(unique(timedGains$histology_abbreviation))){
+    
+    timedGains_CH = timedGains[which(timedGains$chr==c & timedGains$histology_abbreviation==h),]
+    
+    # Define proportion of events - this is the size of the pie chart
+    n_samples = length(unique(timedGains_CH$sample))
+    n_samples_total = length(subset(summaryTable, histology_abbreviation==h)$samplename)
+    prop = sqrt((n_samples/n_samples_total)/pi)
+    timedGains$prop[timedGains$chr==c & timedGains$histology_abbreviation==h] = prop
+    
+    # Define start/end boundaries for segments
+    timedGains_CH = timedGains_CH[order(-timedGains_CH$time),]
+    timedGains_CH$start_segment = cumsum(rep(1/nrow(timedGains_CH), nrow(timedGains_CH))) - 1/nrow(timedGains_CH)
+    timedGains_CH$end_segment = cumsum(rep(1/nrow(timedGains_CH), nrow(timedGains_CH)))
+    
+    timedGains$start_segment[timedGains$chr==c & timedGains$histology_abbreviation==h] = timedGains_CH$start_segment[match(timedGains$segId[timedGains$chr==c & timedGains$histology_abbreviation==h], timedGains_CH$segId)]
+    
+    timedGains$end_segment[timedGains$chr==c & timedGains$histology_abbreviation==h] = timedGains_CH$end_segment[match(timedGains$segId[timedGains$chr==c & timedGains$histology_abbreviation==h], timedGains_CH$segId)]
+    
+  }
+}
+
+# Sort cancer types by median pi0
+medianTime = aggregate(timedGains$time, list(timedGains$n_histology_abbreviation), median)
+timedGains$n_histology_abbreviation = factor(timedGains$n_histology_abbreviation, medianTime[order(medianTime$x),]$Group.1)
+
+# Remove cancer types with fewer than 100 segments, 15 samples, and mean pie size < 0.2
+timedGains = subset(timedGains, histology_abbreviation %in% names(which(table(timedGains$histology_abbreviation) > 100)))
+quiet.ttypes = c(names(which(table(summaryTable$histology_abbreviation) < 20)))
+mean_sizes = aggregate(timedGains$prop[timedGains$chr!="all"], list(timedGains$histology_abbreviation[timedGains$chr!="all"]), mean)
+quiet.ttypes = unique(c(quiet.ttypes,  as.character(mean_sizes[which(mean_sizes$x < 0.2),]$Group.1)))
+
+```
+
+Plot as pie charts
+```{r fig1, fig.height=18, fig.width=25}
+
+theme_set(theme_grey())
+ggplot(data=timedGains[!timedGains$histology_abbreviation %in% quiet.ttypes,]) +
+  facet_grid(n_histology_abbreviation~factor(chr, levels=c(1:22, "X", "all", "WGD"))) + 
+  coord_polar(theta="x") + 
+  geom_rect(aes(xmin=start_segment, xmax=end_segment, ymin=0, ymax=prop, fill=time)) +
+  scale_fill_distiller(palette = "PRGn", name="Time, fraction\n of mutations", breaks=c(0, 0.25, 0.5, 0.75, 1.00), limits=c(0,1)) +
+  theme(strip.background = element_blank()) +
+  theme(strip.text.y=element_text(angle=0, size=20, hjust=0)) + 
+  theme(strip.text.x=element_text(size=15)) +
+  theme(axis.text=element_blank()) +
+  theme(axis.ticks=element_blank(), panel.grid=element_blank()) +
+  theme(panel.spacing=unit(0, "lines"),
+        panel.border=element_rect(color="gray", fill=NA, size=0.25)) +
+  theme(panel.background=element_blank()) +
+  theme(legend.text=element_text(size=15), legend.title=element_text(size=15)) + 
+  theme(legend.position="right") +
+  guides(fill = guide_colorbar(barwidth=1, barheight=5)) +
+  ggtitle("Mutational timing estimates - 2 mutation threshold") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+
+
+# Changes in mutational signature activity, Extended Data Figure 7
+
+Signature log2 fold changes, separately formatted for early vs. late and clonal vs. subclonal
+```{r}
+SigChangesEL = read.delim("20190824_sig_changes_earlyLate.txt", stringsAsFactors = FALSE, header = TRUE)
+SigChangesCS = read.delim("20190824_sig_changes_clonalSubclonal.txt", stringsAsFactors = FALSE, header = TRUE)
+SigChangesAll = list(SigChangesEL, SigChangesCS)
+```
+
+
+Additional filtering and formatting of data
+```{r}
+
+# Remove cancer types that have fewer than 5 samples with a change estimated, and those which are marked as "Other"
+SigChangesAll = lapply(SigChangesAll, function(x){
+  
+  x = within(x, { count = ave(samplename, histology_abbreviation, FUN=function(y) length(unique(y)))})
+  x = subset(x, as.numeric(count) >=5 & !histology_abbreviation %in% c("Cervix-AdenoCA", "Breast-DCIS", "Myeloid-MDS", "Bone-Epith","Breast-LobularCA"))
+  
+})
+
+# Get proportion of events, per chromosome per cancer type
+SigChangesAll = lapply(SigChangesAll, function(x){
+  
+  coords = data.frame(matrix(nrow=0, ncol=5))
+  
+  for (a in unique(x$annotation)){
+  for (h in unique(x$histology_abbreviation)){
+    
+    x_AH = x[which(x$annotation==a & x$histology_abbreviation==h),]
+    
+    # Define proportion of events - this is the size of the pie chart
+    n_samples = length(unique(x_AH$samplename))
+    n_samples_total = length(unique(x[x$histology_abbreviation==h,]$samplename))
+    prop = n_samples/n_samples_total
+    prop = ifelse(prop < 0.2, 0.2, prop)
+    if (nrow(x_AH) >= 3){
+      x_AH$prop = sqrt(prop/pi)
+      
+      # Define start/end boundaries for segments
+      x_AH = x_AH[order(-x_AH[,3]),]
+      x_AH$start_segment = cumsum(rep(1/nrow(x_AH), nrow(x_AH))) - 1/nrow(x_AH)
+      x_AH$end_segment = cumsum(rep(1/nrow(x_AH), nrow(x_AH)))
+      x_AH = x_AH[,c("samplename", "signature", "prop", "start_segment", "end_segment")]
+      coords = rbind(coords, x_AH)
+    }
+   }
+  }
+  x = merge(x, coords, by=c("samplename", "signature"))
+})
+
+# Cap values at fold changes of 0.1 - 10
+SigChangesAll = lapply(SigChangesAll, function(x){
+  
+  max_value = 3.321928
+  x$point_colour = x[,3]
+  x$point_colour = ifelse(x$point_colour > max_value, max_value, x$point_colour)
+  x$point_colour = ifelse(x$point_colour < -1*max_value, -1*max_value, x$point_colour)
+  x
+  
+})
+
+
+```
+
+Get number of samples per histology with a given signature
+```{r}
+SigChangesAll = lapply(SigChangesAll, function(x) {
+    x = within(x, { hist_p_sig_count = ave(histology_abbreviation, annotation, FUN=function(y) length(unique(y)))})
+    x
+})
+
+```
+
+Make pie charts for early vs. late
+Please note that this figure, as displayed in Extended Data Figure 5a, has been further modified in Adobe Illustrator. 
+```{r}
+
+SigChangesEL = SigChangesAll[[1]]
+
+# Order of cancer types
+types = sort(unique(SigChangesEL$histology_abbreviation))
+
+# Order signatures by frequency
+clock=c("SBS1 - Clock-like", "SBS5 - Clock-like")
+freq_EL = unique(SigChangesEL[as.numeric(SigChangesEL$hist_p_sig_count)>=10,c("annotation", "hist_p_sig_count")])
+freq_EL = subset(freq_EL, !annotation %in% clock)
+freq_EL = as.character(freq_EL[order(-as.numeric(freq_EL$hist_p_sig_count)),]$annotation)
+spec_EL = unique(SigChangesEL[as.numeric(SigChangesEL$hist_p_sig_count)<10,c("annotation", "hist_p_sig_count")])
+spec_EL = as.character(spec_EL[order(-as.numeric(spec_EL$hist_p_sig_count)),]$annotation)
+
+SigChangesEL$annotation = factor(SigChangesEL$annotation, levels=c(clock, freq_EL, spec_EL)) 
+ggplot(SigChangesEL) +
+  geom_rect(aes(xmin=start_segment, xmax=end_segment, ymin=0, ymax=prop, fill=point_colour)) +
+  coord_polar(theta="x") +
+  theme(panel.background=element_blank(), axis.text=element_blank(), axis.ticks=element_blank()) +
+  facet_grid(factor(histology_abbreviation, levels=types)~annotation, drop=FALSE) +
+  theme(strip.text.x = element_text(angle=90, size=5, vjust=-0.01), strip.text.y = element_text(angle=0, size=5)) +
+  scale_fill_distiller(palette="PRGn", breaks=c(-3.321928, -2.321928, -1, 0, 1, 2.321928, 3.321928), labels=c(0.1, 0.2, 0.5, 1, 2, 5, 10), name="Signature fold change,\n early vs. late\n") +
+  theme(strip.background = element_blank()) +
+  theme(panel.spacing=unit(0, "lines"),
+        panel.border=element_blank()) +
+  scale_y_continuous(limits = c(0,sqrt(1/pi)), expand=c(0,0)) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.title = element_text(size=7.5), legend.text=element_text(size=5))
+
+```
+
+
+
+Make pie charts
+Please note that this figure, as displayed in Extended Data Figure 5a, has been further modified in Adobe Illustrator. 
+```{r}
+
+SigChangesCS = SigChangesAll[[2]]
+
+# Order of cancer types
+types = sort(unique(SigChangesCS$histology_abbreviation))
+
+# Order signatures by frequency
+clock=c("SBS1 - Clock-like", "SBS5 - Clock-like")
+freq_CS = unique(SigChangesCS[as.numeric(SigChangesCS$hist_p_sig_count)>=10,c("annotation", "hist_p_sig_count")])
+freq_CS = subset(freq_CS, !annotation %in% clock)
+freq_CS = as.character(freq_CS[order(-as.numeric(freq_CS$hist_p_sig_count)),]$annotation)
+spec_CS = unique(SigChangesCS[as.numeric(SigChangesCS$hist_p_sig_count)<10,c("annotation", "hist_p_sig_count")])
+spec_CS = as.character(spec_CS[order(-as.numeric(spec_CS$hist_p_sig_count)),]$annotation)
+
+SigChangesCS$annotation = factor(SigChangesCS$annotation, levels=c(clock, freq_CS, spec_CS)) 
+ggplot(SigChangesCS) +
+  geom_rect(aes(xmin=start_segment, xmax=end_segment, ymin=0, ymax=prop, fill=point_colour)) +
+  coord_polar(theta="x") +
+  theme(panel.background=element_blank(), axis.text=element_blank(), axis.ticks=element_blank()) +
+  facet_grid(factor(histology_abbreviation, levels=types)~annotation, drop=FALSE) +
+  theme(strip.text.x = element_text(angle=90, size=5, vjust=-0.01), strip.text.y = element_text(angle=0, size=5)) +
+  scale_fill_distiller(palette="RdBu", breaks=c(-3.321928, -2.321928, -1, 0, 1, 2.321928, 3.321928), labels=c(0.1, 0.2, 0.5, 1, 2, 5, 10), name="Signature fold change,\n clonal vs. subclonal\n") +
+  theme(strip.background = element_blank()) +
+  theme(panel.spacing=unit(0, "lines"),
+        panel.border=element_blank()) +
+  scale_y_continuous(limits = c(0,sqrt(1/pi)), expand=c(0,0)) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.title = element_text(size=7.5), legend.text=element_text(size=5))
+
+```
+
+
+# Signature heatmaps, Extended Data Figure 1
+
+
+E.g. for Lung-SCC
+```{r fig3, fig.height = 3, fig.width = 8, fig.align = "center"}
+
+clusterSigs <- function(ch){
+  
+  input = subset(ch, select=c("samplename", "signature", "log2fc"))
+  input = reshape(input,
+                  timevar="signature",
+                  idvar=c("samplename"),
+                  direction="wide")
+  rownames(input)=input$samplename
+  input$samplename = NULL
+  input=as.matrix(input)
+  input[is.na(input)] = 0
+  
+  ord <- hclust( dist(input, method = "euclidean"), method = "average" )$order 
+  
+  input = as.data.frame(input)
+  input$samplename = rownames(input)
+  input$samplename <- factor(input$samplename, levels = rownames(input)[ord])
+  
+  ordering = levels(input$samplename)
+  return(ordering)
+}  
+
+SigChangesEL = read.delim("20190824_sig_changes_earlyLate.txt", stringsAsFactors = FALSE, header = TRUE)
+el = subset(SigChangesEL, histology_abbreviation=="Lung-SCC" & signature!="SBS37")
+colnames(el)[3] = "log2fc"
+el$log2fc = ifelse(el$log2fc > 3.321928, 3.321928, el$log2fc)
+el$log2fc = ifelse(el$log2fc < -3.321928, -3.321928, el$log2fc)
+
+el_order = clusterSigs(el)
+el$samplename = factor(el$samplename, levels=el_order)
+el$signature = factor(el$signature, rev(names(sort(table(el$signature)))))
+
+el_plot = ggplot(el) +
+  geom_tile(aes(x=signature, y=factor(samplename), fill=log2fc)) +
+  labs(y="") +
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+  theme(axis.ticks.x = element_blank(), axis.title.x = element_blank()) +
+  theme(strip.background=element_blank()) +
+  theme(panel.background=element_blank(), panel.border=element_blank()) +
+  ggtitle(t) +
+  scale_fill_distiller(palette="PRGn", breaks=c(-3.321928, -2.321928, -1, 0, 1, 2.321928, 3.321928), labels=c("0.1-", 0.2, 0.5, 1, 2, 5, "10+"), limits=c(-3.321928, 3.321928)) +
+  ggtitle("Early/late") +
+  theme(plot.title = element_text(hjust=0.5)) +
+  labs(fill="Signature fold change,\nearly vs. late\n") +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5))
+
+SigChangesCS = read.delim("20190824_sig_changes_clonalSubclonal.txt", stringsAsFactors = FALSE, header = TRUE)
+cs = subset(SigChangesCS, histology_abbreviation=="Lung-SCC" & signature!="SBS37")
+colnames(cs)[3] = "log2fc"
+cs$log2fc = ifelse(cs$log2fc > 3.321928, 3.321928, cs$log2fc)
+cs$log2fc = ifelse(cs$log2fc < -3.321928, -3.321928, cs$log2fc)
+
+cs_order = clusterSigs(cs)
+cs$samplename = factor(cs$samplename, levels=cs_order)
+cs$signature = factor(cs$signature, rev(names(sort(table(cs$signature)))))
+  
+cs_plot = ggplot(cs) +
+  geom_tile(aes(x=signature, y=factor(samplename), fill=log2fc)) +
+  labs(y="") +
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+  theme(axis.ticks.x = element_blank(), axis.title.x = element_blank()) +
+  theme(strip.background=element_blank()) +
+  theme(panel.background=element_blank(), panel.border=element_blank()) +
+  ggtitle(t) +
+  scale_fill_distiller(palette="RdBu", breaks=c(-3.321928, -2.321928, -1, 0, 1, 2.321928, 3.321928), labels=c("0.1-", 0.2, 0.5, 1, 2, 5, "10+"), limits=c(-3.321928, 3.321928)) +
+  ggtitle("Clonal/subclonal") +
+  theme(plot.title = element_text(hjust=0.5)) +
+  labs(fill="Signature fold change,\nclonal vs. subclonal\n") +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5)) 
+
+gridExtra::grid.arrange(el_plot, cs_plot, nrow=1)
+
+
+```
+
+
+## Driver barcharts
+E.g. for Lung-SCC
+```{r}
+
+library(scales)
+
+dr = read.delim('final_driver_summary.txt', stringsAsFactors = FALSE)
+col <- RColorBrewer::brewer.pal(9, "Set1")[c(3,4,2,1)] 
+names(col) = c("clonal [early]", "clonal [late]", "clonal [NA]", "subclonal")
+
+# Remove multi-samples that are not the representative cases
+multi_reps = read.delim('PCAWG multi-tumour list.tsv')
+multi = read.delim('multiSampleCases.txt')
+remove = multi$tumor_wgs_aliquot_id[!multi$tumor_wgs_aliquot_id %in% multi_reps$tumor_wgs_aliquot_id]
+sigChanges = subset(sigChanges, !samplename %in% remove)
+
+n_ct = table(st[!st$samplename %in% remove,]$histology_abbreviation)
+dr$N_ct = n_ct[match(dr$histology_abbreviation, names(n_ct))]
+dr$prop_gene_ct = dr$N_gene/dr$N_ct
+
+dr = subset(dr, N_gene >= 3 & prop_gene_ct >= 0.05)
+
+x = subset(dr, histology_abbreviation=="Lung-SCC" & !is.na(CLS))
+x$gene = factor(x$gene, levels=unique(x[order(-x$N_gene, x$gene),]$gene))
+x$CLS = factor(x$CLS, levels=c("clonal [early]", "clonal [NA]", "clonal [late]", "subclonal"))
+
+  theme_set(theme_classic())
+  ggplot(x) +
+    geom_bar(aes(x=gene, y=N_gene_time, fill=CLS), stat="identity")+
+    scale_y_continuous(expand = c(0,0), breaks=scales::pretty_breaks()) +
+    scale_x_discrete(expand = c(0.01,0)) +
+    scale_fill_manual(values=col, labels=c("early clonal", "late clonal", "clonal [unsp.]", "subclonal"), name="") +
+    labs(x="", y="Driver mutation frequency") +
+    theme(axis.text.x = element_text(angle=45, vjust=0.9, hjust=1, size=20, face="italic")) +
+    theme(axis.text.y = element_text(size=20), axis.title.y=element_text(size=20)) +
+    theme(legend.text = element_text(size=20))
+
+```
+
+
+
+
+
+
+
+
