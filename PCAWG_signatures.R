@@ -1,19 +1,33 @@
-# Signature timing for single samples
+## PCAWG-11 Mutational Signatures timing
 
-# libraries
-library(VariantAnnotation)
+## Libraries
 library(BSgenome.Hsapiens.UCSC.hg19)
+library(VariantAnnotation)
 library(nnls)
 library(reshape2)
 library(plyr)
 library(scales)
 
-# Functions
+## Input files
 
-# Determines if individual SNVs are part of an MNV, input is VCF file
+# Sample ID
+args = commandArgs(TRUE)
+id = args[1]
+print(id)
+
+# Mutation clustering results
+clustering_file_path = args[2]
+
+# VCF files
+vcf_file_path = args[3]
+
+
+## Functions
+
+# Determines if individual SNVs are part of an MNV
 isMNV <- function(vcf) {
-  d <- diff(start(vcf)) == 1 
-  w <- c(FALSE, d) | c(d, FALSE) 
+  d <- diff(start(vcf)) == 1 # are they next to each other?
+  w <- c(FALSE, d) | c(d, FALSE) # need to add comparisons at the end, set to FALSE
   return(w)
 }
 
@@ -49,7 +63,7 @@ formatSNVs <- function(vcf){
   return(vcf)
 }
 
-# Format MNVs so that they match the signature annotation
+# Format MNVs so that they match the signatures annotation
 formatMNVs <- function(vcf){
 
   u <- reduce(granges(vcf[which(isMNV(vcf)),]))
@@ -59,8 +73,8 @@ formatMNVs <- function(vcf){
   
   seqlevelsStyle(u) = "UCSC"
   
-  # Check timing is the same, timing_filepath = path to timed mutation files
-  t = read.delim(gzfile(paste0(timing_filepath, id, "_mutation_timing.txt.gz")), 
+  # Check timing is the same
+  t = read.delim(gzfile(paste0(clustering_file_path, id, "_mutation_timing.txt.gz")), 
                  header=TRUE, stringsAsFactors = FALSE)
   t$start = t$position
   t$end = t$position
@@ -96,11 +110,12 @@ formatMNVs <- function(vcf){
   
   convert_all = c("AA","AG","CA","GA","GG","GT")
   
-  # change purine bases so they match the MNV signatures
+  # change purine bases, this is so they match the bases given in DBS signatures file
   c = which(u$ref_mnv %in% convert_all)
   u$ref_mnv[c] = reverseComplement(DNAStringSet(u$ref_mnv[c])) # if there are no purine bases it just won't add anything
   u$alt_mnv[c] = reverseComplement(DNAStringSet(u$alt_mnv[c]))
   
+  # Format
   u$DBS = paste0(u$ref_mnv, ">", u$alt_mnv)
   
   # There are specific cases that need to be converted
@@ -120,7 +135,6 @@ formatMNVs <- function(vcf){
   return(u)
 }
 
-# Gets difference between ref and alt for indels
 seqDiff <- function(x,y,diff){
   x1 = unlist(strsplit(x, ""))
   y1 = unlist(strsplit(y, "")) 
@@ -133,7 +147,7 @@ seqDiff <- function(x,y,diff){
 }
 
 
-# Get characteristic events corresponding to indel signatures 1, 2, 13 and 8
+# Get indels that correspond to characteristic events from indel signatures ID1, ID2, ID13 and ID8
 formatIndels <- function(vcf){
   
   indel_vcf = vcf
@@ -151,26 +165,28 @@ formatIndels <- function(vcf){
   indel_vcf$del_base = mapply(seqDiff, ref(indel_vcf), alt(indel_vcf), diff="deleted", SIMPLIFY = FALSE)
   indel_vcf$ins_base = mapply(seqDiff, ref(indel_vcf), alt(indel_vcf), diff="inserted", SIMPLIFY = FALSE)
   
+  # We are looking for 4 different types of indels, corresponding to ID1, ID2, ID8 and ID13
+  
   # 1. ID1: 1bp insertion of T at regions of 5+ T's, or A at region of 5+ A's
   ins_1bp_T = indel_vcf[indel_vcf$ins_base=="T" | indel_vcf$ins_base=="A"]
   
   if (length(ins_1bp_T)>0){
     
-    # Get 11bp surrounding, rle of T's/ A's, longer or equal to 5 
+    # Get 11bp surrounding, rle of T's/ A's, are they longer or equal to 5? 
     k=11
-    ins_1bp_T = resize(ins_1bp_T, k, fix = "center") 
+    ins_1bp_T = resize(ins_1bp_T, k, fix = "center") # get 5 bp either side of reference
     ref=FaFile("ucsc.hg19.fasta")
     context_ins_T = as.data.frame(getSeq(ref, ins_1bp_T))
-    context_ins_T$x = substring(context_ins_T$x, 2) 
+    context_ins_T$x = substring(context_ins_T$x, 2) # take the first base off, so that 5bp sequences must include centre base or be on the right hand side
     
     ins_1bp_T_5hp = c()
     for (n in 1:length(ins_1bp_T)){
-      r = rle(strsplit(context_ins_T$x[n], "")[[1]]) 
-      if (any(r$lengths >= 5)){ 
-        b = r$values[which(r$lengths>=5)] 
-        ins_b = ins_1bp_T$ins_base[n] 
-        if (ins_b %in% b){ 
-          ins_1bp_T_5hp = c(ins_1bp_T_5hp, n) 
+      r = rle(strsplit(context_ins_T$x[n], "")[[1]]) # go through and count how many consecutive bases
+      if (any(r$lengths >= 5)){ # are there any stretches >= 5?
+        b = r$values[which(r$lengths>=5)] # get the 5+ repeated base
+        ins_b = ins_1bp_T$ins_base[n] # and the inserted base
+        if (ins_b %in% b){ # is inserted bp one of the repeated ones? In this case, this is fine to be either
+          ins_1bp_T_5hp = c(ins_1bp_T_5hp, n) # if they are (should be A and A or T and T, then add this number to vector)
         }
       } 
     }
@@ -180,13 +196,13 @@ formatIndels <- function(vcf){
     if (length(ID1)>0){ 
       ID1$change = NULL
       k=1
-      ID1 = resize(ID1, k, fix="center") 
+      ID1 = resize(ID1, k, fix="center") # resize back to centre single position
       ID1$classification = "ID1" 
-    } 
+    } # otherwise it is just the empty granges to be added
     
   } else {
     
-    ID1 = ins_1bp_T 
+    ID1 = ins_1bp_T # this will be empty, can just add to the others at the end
     
   }
   
@@ -195,7 +211,7 @@ formatIndels <- function(vcf){
   
   if (length(del_1bp_T)>0){
     
-    # Get 11bp surrounding, rle of T's/ A's, longer or equal to 6 
+    # Get 11bp surrounding, rle of T's/ A's, are they longer or equal to 6? 
     k=12
     del_1bp_T = resize(del_1bp_T, k, fix = "center") 
     ref=FaFile("ucsc.hg19.fasta")
@@ -204,13 +220,13 @@ formatIndels <- function(vcf){
     
     del_1bp_T_6hp = c()
     for (n in 1:length(del_1bp_T)){
-      r = rle(strsplit(context_del_T$x[n], "")[[1]]) 
-      if (any(r$lengths >= 6)){ 
-        b = r$values[which(r$lengths>=6)]
+      r = rle(strsplit(context_del_T$x[n], "")[[1]]) # go through and count how many consecutive bases
+      if (any(r$lengths >= 6)){ # are there any stretches >= 6?
+        b = r$values[which(r$lengths>=6)] # get the 6+ repeated base
         if (length(b)>1) { b = b[2] }
-        del_b = del_1bp_T$del_base[n] 
-        if (del_b %in% b){ 
-          del_1bp_T_6hp = c(del_1bp_T_6hp, n) 
+        del_b = del_1bp_T$del_base[n] # and the deleted base
+        if (del_b %in% b){ # are they the same?
+          del_1bp_T_6hp = c(del_1bp_T_6hp, n) # if they are (should be A and A or T and T, then add this number to vector)
         }
       } 
     }
@@ -240,7 +256,7 @@ formatIndels <- function(vcf){
     del_1bp_T_3tnc = resize(del_1bp_T_3tnc, k, fix="center")
     context_del_1bp_T_3tnc = as.data.frame(getSeq(ref, del_1bp_T_3tnc))
     
-    # Assume that the deleted base is always on the right in the reference allele
+    # I assume that the deleted base is always on the right in the reference allele
     del_1bp_T_2hp = c()
     for (n in 1:length(del_1bp_T)){
       
@@ -265,39 +281,38 @@ formatIndels <- function(vcf){
     }
     
     
-  } else { ID13 = del_1bp_T } 
+  } else { ID13 = del_1bp_T } # i.e. it is empty
   
   
   # 4. 5 bp + deletions, where the deleted segment is not repeated, and there is at least 1bp of microhomology
   bp5r = indel_vcf[which(lapply(indel_vcf$del_base, length)>=5)]
   
   if (length(bp5r)>0){
-    bp5r$id = seq(length(bp5r)) # assign IDs to variants 
+    bp5r$id = seq(length(bp5r)) # assign IDs to variants in the old file so can map back after changing sequence ranges
     bp5 = bp5r
     
     # is the deleted sequence repeated?
-    l = length(bp5$del_base) 
+    l = length(bp5$del_base) # how long is deleted segment?
     bp5$l = l
-    bp5 = bp5 + l 
+    bp5 = bp5 + l # Add the length of the deletion either side
     
     ref = FaFile("ucsc.hg19.fasta")
-    context_bp5 = as.data.frame(getSeq(ref, bp5)) 
+    context_bp5 = as.data.frame(getSeq(ref, bp5)) # get this wide range
     context_bp5$x = substring(context_bp5$x, 2)
     
-    # count how many repeats of the deleted segment per surrounding region
-    ms = c() 
+    ms = c() # count how many repeats of the deleted segment per surrounding region
     for (m in 1:length(bp5)){
       counts = length(gregexpr(bp5$del_base[m], context_bp5$x[m]))
     ms = c(ms, counts)
     }
     
     bp5$context = context_bp5$x
-    bp5 = bp5[ms==1] 
+    bp5 = bp5[ms==1] # the deleted segment is not repeated in the surrounding region
     
-    # if there are any regions that do have repeats
-    if (length(bp5)>0){ 
+    
+    if (length(bp5)>0){ # if there are any regions that do have repeats
       
-      # Look for microhomology in the deletions which are not repeated
+      # Now look for microhomology in the deletions which are not repeated
       # The first deleted base has to be the same as the next remaining base
       bp5$nextbase = substring(bp5$context, (2*bp5$l)+1, (2*bp5$l)+1)
       mh = bp5[bp5$del_base[1][[1]][1]==bp5$nextbase]
@@ -323,18 +338,14 @@ formatIndels <- function(vcf){
 
 
 
-# Get timed multinomials of SNVs, MNVs and indels
+# Get timed multinomials of SNVs, MNVs and indels, removing MNVs from SNV calls
 getSNVs_MNVs_IDs <- function(id){
   
-  # Check in both snv_mnv and graylist subfolders for VCF
-  if (file.exists(paste0(vcf_filepath, id,
-                         ".consensus.20160830.somatic.snv_mnv.vcf.gz"))){
-    vcf = readVcfAsVRanges(paste0(vcf_filepath, id,
-                                  ".consensus.20160830.somatic.snv_mnv.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
-  } else if (file.exists(paste0(vcf_filepath_greylist, id,
-                                ".consensus.20160830.somatic.snv_mnv.vcf.gz"))){
-    vcf = readVcfAsVRanges(paste0(vcf_filepath_greylist, id,
-                                  ".consensus.20160830.somatic.snv_mnv.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
+  # Check in both snv_mnv and graylist subfolders, read in VCF of SNVs
+  if (file.exists(paste0(vcf_file_path,"snv_mnv/", id,".consensus.20160830.somatic.snv_mnv.vcf.gz"))){
+    vcf = readVcfAsVRanges(paste0(vcf_file_path,"snv_mnv/", id,".consensus.20160830.somatic.snv_mnv.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
+  } else if (file.exists(paste0(vcf_file_path, "graylist/snv_mnv/", id,".consensus.20160830.somatic.snv_mnv.vcf.gz"))){
+    vcf = readVcfAsVRanges(paste0(vcf_file_path, "graylist/snv_mnv/", id,".consensus.20160830.somatic.snv_mnv.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
   }
   
   # Get MNVs from the SNV vcf
@@ -343,15 +354,11 @@ getSNVs_MNVs_IDs <- function(id){
   # Remove MNVs from SNVs
   snv_vcf = subsetByOverlaps(vcf, mnv_vcf, invert=TRUE)
   
-  # Indels
-  if (file.exists(paste0(indel_vcf_filepath, id,
-                         ".consensus.20161006.somatic.indel.vcf.gz"))){
-    indel_vcf = readVcfAsVRanges(paste0(indel_vcf_filepath, id,
-                                  ".consensus.20161006.somatic.indel.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
-  } else if (file.exists(paste0(indel_vcf_filepath_greylist, id,
-                                ".consensus.20161006.somatic.indel.vcf.gz"))){
-    indel_vcf = readVcfAsVRanges(paste0(indel_vcf_filepath_greylist, id,
-                                  ".consensus.20161006.somatic.indel.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
+  # Now get indels
+  if (file.exists(paste0(vcf_file_path,"indel/", id,".consensus.20161006.somatic.indel.vcf.gz"))){
+    indel_vcf = readVcfAsVRanges(paste0(vcf_file_path,"indel/", id,".consensus.20161006.somatic.indel.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
+  } else if (file.exists(paste0(vcf_file_path,"graylist/indel/", id,".consensus.20161006.somatic.indel.vcf.gz"))){
+    indel_vcf = readVcfAsVRanges(paste0(vcf_file_path,"graylist/indel/", id,".consensus.20161006.somatic.indel.vcf.gz"), "hg19", param = ScanVcfParam(fixed=c("ALT","FILTER"),geno=NA))
   }
   
   # Format each type of event to agree with classification in signatures
@@ -389,7 +396,7 @@ getSNVs_MNVs_IDs <- function(id){
   rm(vcf)
   
   # Get timing annotation
-  t = read.delim(gzfile(paste0(timing_filepath, id, "_mutation_timing.txt.gz")), 
+  t = read.delim(gzfile(paste0(clustering_file_path, id, "_mutation_timing.txt.gz")), 
                  header=TRUE, stringsAsFactors = FALSE)
   t$start = t$position
   t$end = t$position
@@ -402,14 +409,20 @@ getSNVs_MNVs_IDs <- function(id){
   timed = subset(timed, mut_type==type)
   
   # Double "clonal" section and add
-  clonal = subset(timed, timing!="subclonal")
-  clonal$timing = "clonal"
-  timed = rbind(timed, clonal)  
-  
-  # Also add total
-  all = subset(timed, timing!="clonal")
-  all$timing = "total"
-  timed = rbind(timed, all)
+  if ("clonal" %in% timed$timing){
+    clonal = subset(timed, timing!="subclonal")
+    clonal$timing = "clonal"
+    timed = rbind(timed, clonal)
+    # Also add total
+    all = subset(timed, timing!="clonal")
+    all$timing = "total"
+    timed = rbind(timed, all)
+  } else{
+    timed = timed
+    all = timed
+    all$timing = "total"
+    timed = rbind(timed, all)
+  }
   
   # Split by timing
   timed = split(timed, timed$timing)
@@ -418,6 +431,7 @@ getSNVs_MNVs_IDs <- function(id){
   timed_multi = lapply(timed, function(x){
     table(x$class)
   })
+  
   
 }
 
@@ -430,7 +444,7 @@ nnls_sol <- function(m, s_active, no_active) {
   a  
 }
 
-# NNLS and formatting
+# Get signature weights from mutation matrix
 getSignatureWeights <- function(mutationMatrix, active_comp, sig_comp, sigs){
   
   m = as.matrix(mutationMatrix)
@@ -459,10 +473,10 @@ getSignatureWeights <- function(mutationMatrix, active_comp, sig_comp, sigs){
   } 
 }
 
-# Get all signatures from multinomials
+
 extractSigs <- function(events){
 
-  # SNV signatures
+  # start with SNV signatures
   snv_id = subset(snv_samples, Sample.Name==id)
   active_sigs = names(snv_samples[,4:ncol(snv_samples)][which(subset(snv_samples, Sample.Name==id)[,4:ncol(snv_samples)] > 0)])
   active_comp = as.matrix(snv_comp[,active_sigs])
@@ -606,14 +620,7 @@ replicateSignatureChanges <- function(multi_list, time){
 }
 
 
-# Each sample ID will be an argument, as read from list of IDs
-args = commandArgs(TRUE)
-id = args[1]
-print(id)
 
-timing_filepath = args[2]
-vcf_filepath = args[3]
-indel_vcf_filepath = args[4]
 
 # Read in signatures
 snv_comp = read.csv("sigProfiler_SBS_signatures.csv")
@@ -658,7 +665,7 @@ n_weights = subset(n_weights[,-which(names(n_weights) %in% c("SBS7a", "SBS7b", "
 n_weights = n_weights[,c(1,65,2:4,69,66,5:6,67,7:9,68,10:64)]
 
 # Add a column of the number of mutations per time frame
-timed_muts = read.delim(gzfile(paste0(timing_filepath, id, "_mutation_timing.txt.gz")), 
+timed_muts = read.delim(gzfile(paste0(clustering_file_path, id, "_mutation_timing.txt.gz")), 
                         header=TRUE, stringsAsFactors = FALSE)
 timed_muts = subset(timed_muts, mut_type != "SV")
 timed_muts = table(timed_muts$timing)
@@ -679,6 +686,7 @@ all_weights[,c(1:68, 71)] = all_weights[,c(1:68, 71)]/all_weights$time_total
 # If more mutations are assigned than are actually in the sample, rescale so sum to 1
 all_weights$n_unassigned[all_weights$n_unassigned < 0] = 0
 all_weights[rowSums(all_weights[,1:68], na.rm=TRUE) > 1, c(1:68,71)] = all_weights[rowSums(all_weights[,1:68], na.rm=TRUE) > 1, c(1:68,71)]/rowSums(all_weights[rowSums(all_weights[,1:68], na.rm=TRUE) > 1, c(1:68,71)], na.rm=TRUE)
+
 
 # Calculate changes from early-late and clonal-subclonal
 all_weights_long = reshape(melt(all_weights[,c(1:69, 71:72)]),
@@ -717,7 +725,7 @@ all_weights_long = all_weights_long[!is.na(rowSums(all_weights_long[,3:ncol(all_
 
 CIs = apply(all_weights_long, 1, function(x) {
   
-  sig = x[2] 
+  sig = x[2] # which signature?
   
   # Early/late confidence intervals
   if ("clonal [early]" %in% colnames(all_weights_long) & "clonal [late]" %in% colnames(all_weights_long)){
@@ -758,30 +766,8 @@ n_weights_m = reshape(n_weights_m,
                       direction="wide")
 n_prop_weights = merge(all_weights_long, n_weights_m)
 
-# Save results 
-setwd("/srv/shared/vanloo/home/cjolly/signatures/weights/")
-
-# Columns must include: sample, "variable", early, late, clonalNA, clonal, subclonal, total, clonal_subclonal,
-# early_late, el_lCI, el_uCI, cs_lCI, cs_uCI
-col_names = c("sample", "variable", "clonal..early.", "clonal..late.", "clonal..NA.", "clonal", "subclonal", "total",
-              "clonal_subclonal", "early_late", "el_lCI", "el_uCI", "cs_lCI", "cs_uCI",
-              "value.clonal", "value.clonal..NA.", "value.clonal..early.", "value.clonal..late.", "value.subclonal", "value.total")
-
-if (!all(col_names %in% colnames(n_prop_weights))){
-  
-  # which are missing columns?
-  missing_cols = col_names[which(!col_names %in% colnames(n_prop_weights))]
-  add_df = as.data.frame(matrix(NA, nrow=nrow(n_prop_weights), ncol=(length(missing_cols))))
-  colnames(add_df) = missing_cols
-  n_prop_weights = cbind(n_prop_weights, add_df)
-  
-} 
-colnames(n_prop_weights)[2] = "signature"
-
-write.table(n_prop_weights, paste0(id, "_sig_weights.txt"), sep="\t", row.names=TRUE, quote=FALSE)
-
-# setwd("/srv/shared/vanloo/home/cjolly/signatures/confidence_intervals/")
-# write.table(all_weights_long, paste0(id, "_sig_change_with_ci.txt"), sep="\t", row.names=TRUE, quote=FALSE)
+# Save all results 
+write.table(n_prop_weights, paste0(id, "_20181218_sig_weights.txt"), sep="\t", row.names=TRUE, quote=FALSE)
 
 # Combine bootstrapping results
 if (exists("changes_1000_cs")){
@@ -801,18 +787,13 @@ if (exists("changes_1000_el")){
 if (exists("changes_1000_el") & exists("changes_1000_cs")){
   
   all_bootstraps = rbind(changes_1000_cs, changes_1000_el)
-  setwd("/srv/shared/vanloo/home/cjolly/signatures/bootstrapping/")
   write.table(all_bootstraps, file=gzfile(paste0(id, "_sig_change_bootstraps.txt.gz")), sep="\t", row.names=TRUE, quote=FALSE)
 
 } else if(exists("changes_1000_cs") & !exists("changes_1000_el")){
-  
-  setwd("/srv/shared/vanloo/home/cjolly/signatures/bootstrapping/")
-  write.table(changes_1000_cs, file=gzfile(paste0(id, "_sig_change_bootstraps.txt.gz")), sep="\t", row.names=TRUE, quote=FALSE)
+    write.table(changes_1000_cs, file=gzfile(paste0(id, "_sig_change_bootstraps.txt.gz")), sep="\t", row.names=TRUE, quote=FALSE)
   
 } else if(exists("changes_1000_el") & !exists("changes_1000_cs")){
-  
-  setwd("/srv/shared/vanloo/home/cjolly/signatures/bootstrapping/")
-  write.table(changes_1000_el, file=gzfile(paste0(id, "_sig_change_bootstraps.txt.gz")), sep="\t", row.names=TRUE, quote=FALSE)
+    write.table(changes_1000_el, file=gzfile(paste0(id, "_sig_change_bootstraps.txt.gz")), sep="\t", row.names=TRUE, quote=FALSE)
   
 }
 
